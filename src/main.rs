@@ -1,7 +1,8 @@
 use clap::Parser;
-use rand::{distributions::Uniform, prelude::Distribution, rngs::ThreadRng, thread_rng};
+use rand::{seq::SliceRandom, thread_rng, Rng};
+use arboard::Clipboard;
 
-/// Простий генератор паролів
+/// Простий генератор паролів з додатковими функціями
 #[derive(Parser, Debug)]
 #[command(author, version, about = "CLI Password Generator на Rust")]
 struct Args {
@@ -24,63 +25,68 @@ struct Args {
     /// Вимкнути спеціальні символи
     #[arg(long = "no-special", default_value_t = false)]
     no_special: bool,
+
+    /// Скопіювати результат у буфер обміну
+    #[arg(short = 'c', long = "copy", default_value_t = false)]
+    copy: bool,
 }
 
 fn main() {
     let args = Args::parse();
 
-    match build_charset(&args) {
-        Ok(charset) => {
-            if charset.is_empty() {
-                eprintln!("Помилка: набір символів порожній. Увімкни хоча б одну категорію (letters, digits або special).");
-                std::process::exit(1);
-            }
+    // будуємо набори символів
+    let (lower, upper, digits, special) = (
+        ('a'..='z').collect::<Vec<_>>(),
+        ('A'..='Z').collect::<Vec<_>>(),
+        ('0'..='9').collect::<Vec<_>>(),
+        r###"!@#$%^&*()-_=+[]{};:,.<>?/|~`"###.chars().collect::<Vec<_>>(),
+    );
 
-            let password = generate_password(args.length, &charset, &mut thread_rng());
-            println!("{}", password);
-        }
-        Err(e) => {
-            eprintln!("Помилка: {}", e);
-            std::process::exit(1);
-        }
+    // формуємо доступні категорії
+    let mut categories: Vec<Vec<char>> = Vec::new();
+    if !args.no_lowercase { categories.push(lower); }
+    if !args.no_uppercase { categories.push(upper); }
+    if !args.no_digits { categories.push(digits); }
+    if !args.no_special { categories.push(special); }
+
+    if categories.is_empty() {
+        eprintln!("⚠️ Помилка: увімкни хоча б одну категорію символів.");
+        std::process::exit(1);
+    }
+
+    // генеруємо пароль
+    let password = generate_password(args.length, &categories);
+
+    // вивід
+    println!("{}", password);
+
+    if args.copy {
+        let mut clipboard = Clipboard::new().unwrap();
+        clipboard.set_text(password).unwrap();
+        println!("📋 Пароль скопійовано у буфер обміну.");
     }
 }
 
-/// Формує набір символів згідно з опціями
-fn build_charset(args: &Args) -> Result<Vec<char>, &'static str> {
-    let mut chars = Vec::new();
+/// Генератор паролів з гарантією хоча б одного символу з кожної категорії
+fn generate_password(len: usize, categories: &[Vec<char>]) -> String {
+    let mut rng = thread_rng();
+    let mut password_chars: Vec<char> = Vec::new();
 
-    if !args.no_lowercase {
-        chars.extend(('a'..='z').into_iter());
-    }
-    if !args.no_uppercase {
-        chars.extend(('A'..='Z').into_iter());
-    }
-    if !args.no_digits {
-        chars.extend(('0'..='9').into_iter());
-    }
-    if !args.no_special {
-        // набір спеціальних символів — можна розширити за бажанням
-        let special = r###"!@#$%^&*()-_=+[]{};:,.<>?/|~`"###;
-        chars.extend(special.chars());
+    // крок 1: обов’язково додаємо по одному символу з кожної категорії
+    for category in categories {
+        if let Some(c) = category.choose(&mut rng) {
+            password_chars.push(*c);
+        }
     }
 
-    Ok(chars)
-}
-
-/// Генерує пароль довжини `len` з `charset`
-fn generate_password(len: usize, charset: &[char], rng: &mut ThreadRng) -> String {
-    if charset.is_empty() || len == 0 {
-        return String::new();
+    // крок 2: добираємо решту символів довжини
+    let all_chars: Vec<char> = categories.iter().flatten().copied().collect();
+    for _ in password_chars.len()..len {
+        password_chars.push(*all_chars.choose(&mut rng).unwrap());
     }
 
-    let dist = Uniform::from(0..charset.len());
-    let mut out = String::with_capacity(len);
+    // крок 3: перемішуємо, щоб "обов’язкові" символи не були на початку
+    password_chars.shuffle(&mut rng);
 
-    for _ in 0..len {
-        let idx = dist.sample(rng);
-        out.push(charset[idx]);
-    }
-
-    out
+    password_chars.into_iter().collect()
 }
